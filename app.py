@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 # CONFIG
 # -----------------
 load_dotenv()
-API_KEY = os.getenv("OPENROUTER_API_KEY")
+API_KEY = st.secrets["OPENROUTER_API_KEY"]
 MODEL = "openai/gpt-oss-20b:free"
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
