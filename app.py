@@ -5,7 +5,7 @@ import re
 from dotenv import load_dotenv
 
 # -----------------
-# CONFIG
+# CONFIG & KEYS
 # -----------------
 load_dotenv()
 API_KEY = st.secrets.get("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
@@ -13,10 +13,14 @@ MODEL = "openai/gpt-oss-20b:free"
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 if not API_KEY:
-    st.error("API key not found. Please set OPENROUTER_API_KEY in your Streamlit secrets or local environment.")
+    st.error("API key not found. Please set OPENROUTER_API_KEY in Streamlit secrets or environment.")
     st.stop()
 
-def ask_openrouter(prompt, timeout=30):
+# -----------------
+# UTILITIES
+# -----------------
+def ask_openrouter(prompt, timeout=60):
+    """Send a prompt to the OpenRouter API and return the model's text reply."""
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -32,14 +36,23 @@ def ask_openrouter(prompt, timeout=30):
     except Exception as e:
         return f"❌ Error contacting API: {e}"
 
+def strip_numbering(line):
+    return re.sub(r'^\s*\d+\s*[\).\:-]?\s*', '', line).strip()
+
+# -----------------
+# STRICT LLM HELPERS
+# -----------------
 def check_answer_with_llm(question, student_answer):
     prompt = (
+        "You are an examiner. Determine if the student's answer is correct "
+        "STRICTLY based on the tutorial below. Ignore outside knowledge. "
+        "Reply with a single word 'CORRECT' or 'INCORRECT' at the start, "
+        "followed by one short sentence of feedback. Do NOT reveal the correct answer.\n\n"
+        "=== TUTORIAL START ===\n"
+        f"{st.session_state.lesson}\n"
+        "=== TUTORIAL END ===\n\n"
         f"Question: {question}\n"
-        f"Student Answer: {student_answer}\n\n"
-        "Evaluate whether the student's answer is correct. "
-        "Reply starting with a single word 'CORRECT' or 'INCORRECT'. "
-        "Optionally add one short sentence of feedback after that word. "
-        "Do NOT reveal the correct answer."
+        f"Student Answer: {student_answer}\n"
     )
     resp = ask_openrouter(prompt)
     if isinstance(resp, str):
@@ -52,34 +65,57 @@ def check_answer_with_llm(question, student_answer):
 
 def generate_hint(question, answer_text):
     prompt = (
+        "You are a helpful tutor. Provide a short hint that nudges the student toward the answer "
+        "without revealing it. Use ONLY the information in the tutorial. "
+        "Do not add new facts.\n\n"
+        "=== TUTORIAL START ===\n"
+        f"{st.session_state.lesson}\n"
+        "=== TUTORIAL END ===\n\n"
         f"Question: {question}\n"
-        f"Correct answer (for your reference): {answer_text}\n\n"
-        "Provide a short hint that nudges the student toward the answer but does NOT reveal it."
+        f"(For your reference only) Answer: {answer_text}\n"
+        "Hint:"
     )
     return ask_openrouter(prompt)
 
-def strip_numbering(line):
-    return re.sub(r'^\s*\d+\s*[\).\:-]?\s*', '', line).strip()
+# -----------------
+# SESSION STATE INIT
+# -----------------
+defaults = {
+    "page": "home",
+    "lesson": "",
+    "subject": "",
+    "concept": "",
+    "quiz": [],
+    "current_q": 0,
+    "score": 0,
+    "hints_used": {},
+    "difficulty_grade": 6,
+    "quiz_feedback": None,
+    "last_tutorial_signature": None
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # -----------------
-# STATE INIT
+# TUTORIAL SYNC (ROBUST AUTO REGENERATION)
 # -----------------
-if "page" not in st.session_state:
-    st.session_state.page = "home"
-if "lesson" not in st.session_state:
-    st.session_state.lesson = ""
-if "quiz" not in st.session_state:
-    st.session_state.quiz = []
-if "current_q" not in st.session_state:
-    st.session_state.current_q = 0
-if "score" not in st.session_state:
-    st.session_state.score = 0
-if "hints_used" not in st.session_state:
-    st.session_state.hints_used = {}
-if "difficulty_grade" not in st.session_state:
-    st.session_state.difficulty_grade = 6
-if "quiz_feedback" not in st.session_state:
-    st.session_state.quiz_feedback = None  # stores tuple (is_correct, feedback)
+def ensure_tutorial_uptodate():
+    sig = (st.session_state.subject, st.session_state.concept, st.session_state.difficulty_grade)
+    if st.session_state.get("last_tutorial_signature") != sig and st.session_state.subject and st.session_state.concept:
+        with st.spinner("Updating tutorial for the new settings..."):
+            st.session_state.lesson = ask_openrouter(
+                f"You are an expert {st.session_state.subject} teacher for Grade {st.session_state.difficulty_grade}."
+                f" Create a clear, structured tutorial for the topic '{st.session_state.concept}'."
+                f" The tutorial must be entirely self-contained and sufficient for answering basic conceptual questions."
+                f" Include short sections with headings, key definitions, examples, and a brief summary."
+                f" Keep language age-appropriate for Grade {st.session_state.difficulty_grade} in India."
+            )
+        st.session_state.last_tutorial_signature = sig
+        st.session_state.quiz = []
+        st.session_state.current_q = 0
+        st.session_state.score = 0
+        st.session_state.hints_used = {}
 
 # -----------------
 # HOME PAGE
@@ -92,21 +128,12 @@ if st.session_state.page == "home":
 
     try:
         st.session_state.difficulty_grade = int(grade_option.split()[1])
-    except Exception:
+    except:
         st.session_state.difficulty_grade = 6
 
     if st.button("Generate Tutorial") and concept.strip():
-        prompt = (
-            f"Create a clear, structured, and engaging tutorial for Grade {st.session_state.difficulty_grade} "
-            f"{subject} on the topic '{concept}'. Make it suitable for a student."
-        )
-        with st.spinner("Generating tutorial..."):
-            resp = ask_openrouter(prompt)
-        st.session_state.lesson = resp
-        st.session_state.quiz = []
-        st.session_state.current_q = 0
-        st.session_state.score = 0
-        st.session_state.hints_used = {}
+        st.session_state.subject = subject
+        st.session_state.concept = concept.strip()
         st.session_state.page = "tutorial"
         st.rerun()
 
@@ -114,6 +141,8 @@ if st.session_state.page == "home":
 # TUTORIAL PAGE
 # -----------------
 elif st.session_state.page == "tutorial":
+    ensure_tutorial_uptodate()
+
     st.title("📖 Tutorial")
     st.write(st.session_state.lesson or "No tutorial yet.")
 
@@ -122,60 +151,54 @@ elif st.session_state.page == "tutorial":
         if st.button("⬅ Easier"):
             if st.session_state.difficulty_grade > 1:
                 st.session_state.difficulty_grade -= 1
-                with st.spinner("Regenerating easier tutorial..."):
-                    prompt = (
-                        f"Create a clear, structured tutorial for Grade {st.session_state.difficulty_grade} "
-                        f"on the same topic."
-                    )
-                    st.session_state.lesson = ask_openrouter(prompt)
-                    st.session_state.quiz = []
-                    st.session_state.current_q = 0
-                    st.session_state.score = 0
-                    st.session_state.hints_used = {}
-                    st.rerun()
-
+                st.rerun()
     with col_mid:
         st.markdown(f"**Difficulty (grade): Grade {st.session_state.difficulty_grade}**")
         st.progress(st.session_state.difficulty_grade / 12)
-
     with col_right:
         if st.button("Harder ➡"):
             if st.session_state.difficulty_grade < 12:
                 st.session_state.difficulty_grade += 1
-                with st.spinner("Regenerating harder tutorial..."):
-                    prompt = (
-                        f"Create a clear, structured tutorial for Grade {st.session_state.difficulty_grade} "
-                        f"on the same topic."
-                    )
-                    st.session_state.lesson = ask_openrouter(prompt)
-                    st.session_state.quiz = []
-                    st.session_state.current_q = 0
-                    st.session_state.score = 0
-                    st.session_state.hints_used = {}
-                    st.rerun()
+                st.rerun()
 
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Understood, let's move to quiz"):
-            concept = "the topic"  # safe fallback if needed
             with st.spinner("Generating quiz questions..."):
                 quiz_text = ask_openrouter(
-                    f"Generate 10 quiz questions (only questions) based on the following tutorial:\n\n"
-                    f"{st.session_state.lesson}"
+                    "You are a careful examiner. Generate exactly 10 quiz questions ONLY (no answers in this step). "
+                    "CRITICAL RULES: Questions must be answerable directly and exclusively from the tutorial below; "
+                    "do not use outside knowledge; do not invent facts. "
+                    f"Context: Subject={st.session_state.subject}, Grade={st.session_state.difficulty_grade}, "
+                    f"Topic='{st.session_state.concept}'. "
+                    "Write each question on a new line without numbering.\n\n"
+                    "=== TUTORIAL START ===\n"
+                    f"{st.session_state.lesson}\n"
+                    "=== TUTORIAL END ==="
                 )
+
             with st.spinner("Generating answers for the quiz..."):
                 answers_text = ask_openrouter(
-                    f"For the following quiz questions, provide the correct answers:\n\n{quiz_text}"
+                    "Provide concise, correct answers to the following quiz questions. "
+                    "CRITICAL RULES: Answers must be found verbatim or paraphrased from the tutorial below; "
+                    "do not use outside knowledge; if an answer cannot be derived strictly from the tutorial, reply with 'INSUFFICIENT'. "
+                    f"Context: Subject={st.session_state.subject}, Grade={st.session_state.difficulty_grade}, "
+                    f"Topic='{st.session_state.concept}'. "
+                    "One short answer per line, aligned with the questions order.\n\n"
+                    "=== TUTORIAL START ===\n"
+                    f"{st.session_state.lesson}\n"
+                    "=== TUTORIAL END ===\n\n"
+                    "=== QUESTIONS START ===\n"
+                    f"{quiz_text}\n"
+                    "=== QUESTIONS END ==="
                 )
-            q_lines = [line for line in quiz_text.splitlines() if line.strip()]
-            a_lines = [line for line in answers_text.splitlines() if line.strip()]
-            questions = [strip_numbering(l) for l in q_lines]
-            answers = [strip_numbering(l) for l in a_lines]
-            length = min(len(questions), len(answers))
-            quiz_data = [{"question": questions[i], "answer": answers[i]} for i in range(length)]
-            while len(quiz_data) < 10:
-                quiz_data.append({"question": f"Short question about {concept}", "answer": ""})
-            st.session_state.quiz = quiz_data[:10]
+
+            q_lines = [strip_numbering(l) for l in quiz_text.splitlines() if l.strip()]
+            a_lines = [strip_numbering(l) for l in answers_text.splitlines() if l.strip()]
+            pairs = list(zip(q_lines, a_lines))
+            filtered = [{"question": q, "answer": a} for q, a in pairs if a.lower().strip() != "insufficient"]
+
+            st.session_state.quiz = filtered[:10]
             st.session_state.current_q = 0
             st.session_state.score = 0
             st.session_state.hints_used = {}
@@ -185,16 +208,11 @@ elif st.session_state.page == "tutorial":
 
     with col2:
         if st.button("Give me a better tutorial"):
-            with st.spinner("Regenerating tutorial..."):
-                new_tut = ask_openrouter(
-                    f"Re-explain this topic in a simpler and clearer manner suitable for Grade {st.session_state.difficulty_grade}:\n\n"
-                    f"{st.session_state.lesson}"
-                )
-                st.session_state.lesson = new_tut
-                st.rerun()
+            st.session_state.last_tutorial_signature = None
+            st.rerun()
 
 # -----------------
-# QUIZ PAGE (pause on wrong answer)
+# QUIZ PAGE
 # -----------------
 elif st.session_state.page == "quiz":
     st.title("📝 Quiz Time")
@@ -249,7 +267,6 @@ elif st.session_state.page == "quiz":
                 lines = feedback.strip().splitlines()
                 if len(lines) > 1:
                     st.write("Feedback:", "\n".join(lines[1:]).strip())
-
                 if st.button("Next Question ➡"):
                     st.session_state.current_q += 1
                     st.session_state.quiz_feedback = None
