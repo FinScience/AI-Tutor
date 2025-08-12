@@ -1,0 +1,19 @@
+# Python
+__pycache__
+.pyc
+.env
+.env.
+venv
+.venv
+env
+.egg-info
+
+# Jupyter
+.ipynb_checkpoints
+
+# Streamlit secrets (do NOT commit this)
+.streamlitsecrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
