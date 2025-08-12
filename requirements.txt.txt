@@ -1,3 +1,0 @@
-streamlit
-requests
-python-dotenv   # optional for local dev
