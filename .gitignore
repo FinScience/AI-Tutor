@@ -13,6 +13,7 @@ env
 
 # Streamlit secrets (do NOT commit this)
 .streamlitsecrets.toml
+.streamlit/secrets.toml
 
 # OS
 .DS_Store
